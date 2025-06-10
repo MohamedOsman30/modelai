@@ -3,7 +3,7 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import InputLayer, Conv2D
+from tensorflow.keras.layers import Layer, InputLayer, Conv2D
 from tensorflow.keras.initializers import GlorotUniform, Zeros
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
@@ -21,24 +21,48 @@ class FixedInputLayer(InputLayer):
             config['batch_input_shape'] = config.pop('batch_shape')
         return super().from_config(config)
 
-class FixedConv2D(Conv2D):
+# Custom dtype policy handler
+class DTypePolicyFix:
     @classmethod
     def from_config(cls, config):
-        # Convert legacy dtype policy format
+        # Handle both new and legacy formats
+        if isinstance(config, dict):
+            if 'class_name' in config and config['class_name'] == 'DTypePolicy':
+                return tf.keras.mixed_precision.Policy(config['config']['name'])
+            return tf.keras.mixed_precision.Policy(config['name'])
+        return tf.keras.mixed_precision.Policy(config)
+
+# Generic layer fixer
+class FixedLayer(Layer):
+    @classmethod
+    def from_config(cls, config):
+        # Fix dtype policy
         if 'dtype' in config and isinstance(config['dtype'], dict):
-            dtype_config = config['dtype']
-            if dtype_config.get('class_name') == 'DTypePolicy':
-                config['dtype'] = dtype_config['config']['name']
+            config['dtype'] = DTypePolicyFix.from_config(config['dtype'])
         return super().from_config(config)
 
-# Custom objects mapping for legacy model support
+# Create fixed versions of all layer types
+def create_fixed_layer_class(base_class):
+    class FixedLayerClass(base_class, FixedLayer):
+        pass
+    FixedLayerClass.__name__ = f"Fixed{base_class.__name__}"
+    return FixedLayerClass
+
+# Layer types to fix
+layer_types = [Conv2D]  # Add other layer types if needed
+
+# Custom objects mapping
 CUSTOM_OBJECTS = {
     'InputLayer': FixedInputLayer,
-    'Conv2D': FixedConv2D,
+    'DTypePolicy': DTypePolicyFix.from_config,
     'GlorotUniform': GlorotUniform,
-    'Zeros': Zeros,
-    'DTypePolicy': tf.keras.mixed_precision.Policy
+    'Zeros': Zeros
 }
+
+# Register fixed layer classes
+for layer_type in layer_types:
+    fixed_class = create_fixed_layer_class(layer_type)
+    CUSTOM_OBJECTS[layer_type.__name__] = fixed_class
 
 # ================== MODEL PATHS AND LOADING ==================
 MODEL_DIR = "/app/models"
@@ -52,6 +76,8 @@ try:
     model = load_model(model_path, custom_objects=CUSTOM_OBJECTS)
     print("Model loaded successfully!")
 except Exception as e:
+    import traceback
+    print(f"Detailed error: {traceback.format_exc()}")
     raise RuntimeError(f"Failed to load model at {model_path}: {e}")
 
 # ================== YOLO INITIALIZATION ==================
