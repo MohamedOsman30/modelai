@@ -3,24 +3,44 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import InputLayer  # Import InputLayer for custom fix
+from tensorflow.keras.layers import InputLayer, Conv2D
+from tensorflow.keras.initializers import GlorotUniform, Zeros
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+import tensorflow as tf
 import os
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# SOLUTION: Custom InputLayer class to handle legacy 'batch_shape' parameter
+# ================== MODEL COMPATIBILITY FIXES ==================
 class FixedInputLayer(InputLayer):
     @classmethod
     def from_config(cls, config):
-        # Convert legacy 'batch_shape' to 'batch_input_shape'
         if 'batch_shape' in config:
             config['batch_input_shape'] = config.pop('batch_shape')
         return super().from_config(config)
 
-# Define paths
+class FixedConv2D(Conv2D):
+    @classmethod
+    def from_config(cls, config):
+        # Convert legacy dtype policy format
+        if 'dtype' in config and isinstance(config['dtype'], dict):
+            dtype_config = config['dtype']
+            if dtype_config.get('class_name') == 'DTypePolicy':
+                config['dtype'] = dtype_config['config']['name']
+        return super().from_config(config)
+
+# Custom objects mapping for legacy model support
+CUSTOM_OBJECTS = {
+    'InputLayer': FixedInputLayer,
+    'Conv2D': FixedConv2D,
+    'GlorotUniform': GlorotUniform,
+    'Zeros': Zeros,
+    'DTypePolicy': tf.keras.mixed_precision.Policy
+}
+
+# ================== MODEL PATHS AND LOADING ==================
 MODEL_DIR = "/app/models"
 MODEL_NAME = "autism_detection_model_(9.4).h5"
 model_path = os.path.join(MODEL_DIR, MODEL_NAME)
@@ -28,21 +48,13 @@ model_path = os.path.join(MODEL_DIR, MODEL_NAME)
 # Debug: Log model path
 print(f"Model path: {os.path.abspath(model_path)}")
 
-# Load the autism detection model with custom fix
 try:
-    # Use custom InputLayer to handle legacy format
-    model = load_model(
-        model_path,
-        custom_objects={'InputLayer': FixedInputLayer}
-    )
+    model = load_model(model_path, custom_objects=CUSTOM_OBJECTS)
     print("Model loaded successfully!")
 except Exception as e:
     raise RuntimeError(f"Failed to load model at {model_path}: {e}")
 
-# Rest of your code remains unchanged...
-# [Keep your YOLO initialization, helper functions, and routes the same]
-# ======================================================================
-# Load YOLO model using OpenCV
+# ================== YOLO INITIALIZATION ==================
 YOLO_DIR = "/app/yolo"
 weights_path = os.path.join(YOLO_DIR, "yolov3.weights")
 cfg_path = os.path.join(YOLO_DIR, "yolov3.cfg")
@@ -59,33 +71,31 @@ with open(names_path, "r") as f:
 layer_names = net.getLayerNames()
 output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-# Function to check if the image is blurry
+# ================== HELPER FUNCTIONS ==================
 def is_image_blurry(image, threshold=100):
+    """Check if image is blurry using Laplacian variance."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
-    return variance_of_laplacian < threshold
+    variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return variance < threshold
 
-# Function to check if the image contains a human using YOLO
 def contains_human(image):
+    """Detect if image contains a human using YOLO."""
     height, width, _ = image.shape
     blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
     net.setInput(blob)
     outputs = net.forward(output_layers)
 
-    human_detected = False
     for output in outputs:
         for detection in output:
             scores = detection[5:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
             if confidence > 0.5 and class_id == 0:  # Class ID 0 is "person"
-                human_detected = True
-                break
-    print(f"Human detected: {human_detected}")
-    return human_detected
+                return True
+    return False
 
-# Preprocess the image
 def preprocess_image(image_path, target_size=(299, 299)):
+    """Preprocess image for model prediction."""
     original_image = cv2.imread(image_path)
     if original_image is None:
         return {"error": "Invalid image path or image could not be read."}
@@ -99,8 +109,8 @@ def preprocess_image(image_path, target_size=(299, 299)):
     image = preprocess_input(image)
     return {"image": image}
 
-# Prediction function
 def predict_image(model, image_path):
+    """Make prediction using the loaded model."""
     preprocess_result = preprocess_image(image_path)
     if "error" in preprocess_result:
         return preprocess_result
@@ -109,9 +119,9 @@ def predict_image(model, image_path):
     prediction = model.predict(image)[0]
     predicted_class = np.argmax(prediction)
     class_labels = ['Autism', 'Normal']
-    predicted_label = class_labels[predicted_class]
-    return {"prediction": predicted_label}
+    return {"prediction": class_labels[predicted_class]}
 
+# ================== FLASK ROUTES ==================
 @app.route('/')
 def home():
     return 'Autism Detection API is live.'
