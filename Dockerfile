@@ -1,7 +1,6 @@
-# Use a compatible and slim base image
 FROM python:3.11-slim
 
-# Install system dependencies required for OpenCV, TensorFlow, and pip builds
+# Install system dependencies for OpenCV, TensorFlow, and pip builds
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -15,23 +14,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy only the requirements first
+# Copy only requirements first
 COPY requirements.txt .
 
-# Upgrade pip and install dependencies line-by-line for debugging
+# Upgrade pip and install dependencies
 RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies one at a time to identify failures
-RUN cat requirements.txt | xargs -n 1 pip install --no-cache-dir
-
-# Copy the full app code
-COPY . .
-
-# Download required files (like YOLO models)
+# Copy download script and run it
+COPY download_yolo.py .
 RUN python download_yolo.py
 
-# Expose the Flask/Gunicorn port
+# Debug: List contents of /app/models and /app/yolo
+RUN ls -lh /app/models || echo "No /app/models directory"
+RUN ls -lh /app/yolo || echo "No /app/yolo directory"
+
+# Copy the rest of the app code
+COPY . .
+
+# Expose port
 EXPOSE 8080
 
-# Launch the app with Gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080"]
+# Launch with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app"]
