@@ -3,12 +3,22 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import InputLayer  # Import InputLayer for custom fix
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 import os
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+# SOLUTION: Custom InputLayer class to handle legacy 'batch_shape' parameter
+class FixedInputLayer(InputLayer):
+    @classmethod
+    def from_config(cls, config):
+        # Convert legacy 'batch_shape' to 'batch_input_shape'
+        if 'batch_shape' in config:
+            config['batch_input_shape'] = config.pop('batch_shape')
+        return super().from_config(config)
 
 # Define paths
 MODEL_DIR = "/app/models"
@@ -18,13 +28,20 @@ model_path = os.path.join(MODEL_DIR, MODEL_NAME)
 # Debug: Log model path
 print(f"Model path: {os.path.abspath(model_path)}")
 
-# Load the autism detection model
+# Load the autism detection model with custom fix
 try:
-    model = load_model(model_path)
+    # Use custom InputLayer to handle legacy format
+    model = load_model(
+        model_path,
+        custom_objects={'InputLayer': FixedInputLayer}
+    )
     print("Model loaded successfully!")
 except Exception as e:
     raise RuntimeError(f"Failed to load model at {model_path}: {e}")
 
+# Rest of your code remains unchanged...
+# [Keep your YOLO initialization, helper functions, and routes the same]
+# ======================================================================
 # Load YOLO model using OpenCV
 YOLO_DIR = "/app/yolo"
 weights_path = os.path.join(YOLO_DIR, "yolov3.weights")
