@@ -10,50 +10,26 @@ import os
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Define the model path
-MODEL_DIR = "/app/models"  # Consistent directory for Docker
+# Define paths
+MODEL_DIR = "/app/models"
 MODEL_NAME = "autism_detection_model_(9.4).h5"
 model_path = os.path.join(MODEL_DIR, MODEL_NAME)
 
-# Debug: Log environment details
-print("Current working directory:", os.getcwd())
-print("Model path:", os.path.abspath(model_path))
-
-# Check if the model file exists
-if not os.path.exists(model_path):
-    raise FileNotFoundError(f"Model file {model_path} does not exist.")
-
-# Check the file size
-file_size = os.path.getsize(model_path)
-print(f"Model file exists, size: {file_size} bytes")
-expected_size = 256827360  # From your build logs
-if abs(file_size - expected_size) > 1000000:  # 1 MB tolerance
-    raise ValueError(f"Model file size {file_size} bytes does not match expected {expected_size} bytes")
-
-# Verify HDF5 signature
-with open(model_path, 'rb') as f:
-    signature = f.read(4)
-    if signature != b'\x89HDF':
-        raise ValueError(f"Model file {model_path} is not a valid HDF5 file. Signature: {signature}")
+# Debug: Log model path
+print(f"Model path: {os.path.abspath(model_path)}")
 
 # Load the autism detection model
 try:
     model = load_model(model_path)
     print("Model loaded successfully!")
 except Exception as e:
-    raise RuntimeError(f"Failed to load model: {e}")
+    raise RuntimeError(f"Failed to load model at {model_path}: {e}")
 
 # Load YOLO model using OpenCV
-YOLO_DIR = os.path.join("/app", "yolo")  # Consistent directory for Docker
-
-# Verify YOLO files exist
+YOLO_DIR = "/app/yolo"
 weights_path = os.path.join(YOLO_DIR, "yolov3.weights")
 cfg_path = os.path.join(YOLO_DIR, "yolov3.cfg")
 names_path = os.path.join(YOLO_DIR, "coco.names")
-
-for path in [weights_path, cfg_path, names_path]:
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"YOLO file {path} does not exist.")
 
 # Load YOLO model
 net = cv2.dnn.readNet(weights_path, cfg_path)
