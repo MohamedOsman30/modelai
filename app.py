@@ -36,7 +36,9 @@ def load_model_in_background():
                 logger.error(f"Model file not found at {abs_model_path}")
                 raise FileNotFoundError(f"Model file not found at {abs_model_path}")
             try:
-                # Validate HDF5 file
+                # Validate HDF5 file and log file size
+                file_size = os.path.getsize(model_path)
+                logger.info(f"Model file size: {file_size} bytes")
                 with h5py.File(model_path, 'r') as f:
                     logger.info(f"Validated HDF5 file at {abs_model_path}")
                 model = load_model(model_path)
@@ -144,9 +146,10 @@ def predict():
             except Exception as e:
                 logger.error(f"Error removing temporary file {image_path}: {e}")
 
-# Remove development server for production
-# if __name__ == '__main__': block is commented out to ensure gunicorn is used
-# if __name__ == '__main__':
-#     port = int(os.getenv('PORT', 5000))
-#     logger.info(f"Running development server on host 0.0.0.0 and port {port}")
-#     app.run(host='0.0.0.0', port=port)
+# No development server in production
+# Development server is for local testing only
+if __name__ == '__main__':
+    logger.warning("Running in development mode. Use gunicorn for production.")
+    port = int(os.getenv('PORT', 5000))
+    logger.info(f"Running development server on host 0.0.0.0 and port {port}")
+    app.run(host='0.0.0.0', port=port)
