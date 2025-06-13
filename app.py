@@ -30,7 +30,7 @@ def load_model_in_background():
     global model, model_load_error
     with model_lock:
         if model is None and model_load_error is None:
-            model_path = 'https://media.githubusercontent.com/media/MohamedOsman30/modelai/refs/heads/master/autism_detection_model_(9.4).h5?download=true'
+            model_path = 'autism_detection_model_(9.4).h5'  # Correct local path
             abs_model_path = os.path.abspath(model_path)
             logger.info(f"Attempting to load model from: {abs_model_path}")
             if not os.path.exists(model_path):
