@@ -1,6 +1,9 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "libGL", "libjpeg", "zlib", "pkg-config", "cmake", "blas", "lapack"]
 
+[phases.build]
+cmds = []  # Prevent unwanted build commands like python app.py
+
 [phases.install]
 cmds = [
   "python3.11 -m venv /opt/venv",
