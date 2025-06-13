@@ -6,33 +6,55 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 import os
+import logging
+import threading
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
+
 # Log startup details
 port = os.getenv('PORT', '5000')
 logger.info(f"Starting Flask app on host 0.0.0.0 and port {port}")
+
 # Lazy-load the model
 model = None
+model_lock = threading.Lock()
+
+def load_model_in_background():
+    global model
+    with model_lock:
+        if model is None:
+            model_path = 'autism_detection_model_(9.4).h5'
+            if not os.path.exists(model_path):
+                logger.error(f"Model file not found at {model_path}")
+                raise FileNotFoundError(f"Model file not found at {model_path}")
+            logger.info("Loading model in background...")
+            model = load_model(model_path)
+            logger.info("Model loaded successfully")
+
+# Start model loading in a separate thread
+threading.Thread(target=load_model_in_background, daemon=True).start()
 
 def load_model_if_needed():
-    global model
-    if model is None:
-        model = load_model('autism_detection_model_(9.4).h5')
-    return model
+    with model_lock:
+        if model is None:
+            logger.info("Waiting for model to load...")
+            load_model_in_background()
+        return model
 
-# Health check endpoint
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"}), 200
 
-# Function to check if the image is blurry
 def is_image_blurry(image, threshold=100):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
     return variance_of_laplacian < threshold
 
-# Preprocessing the image
 def preprocess_image(image_path, target_size=(299, 299)):
     original_image = cv2.imread(image_path)
     if original_image is None:
@@ -47,7 +69,6 @@ def preprocess_image(image_path, target_size=(299, 299)):
     image = preprocess_input(image)
     return {"image": image}
 
-# Prediction function
 def predict_image(model, image_path):
     preprocess_result = preprocess_image(image_path)
     if "error" in preprocess_result:
@@ -60,7 +81,6 @@ def predict_image(model, image_path):
     predicted_label = class_labels[predicted_class]
     return {"prediction": predicted_label}
 
-# Predict Route
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
@@ -72,24 +92,24 @@ def predict():
 
     image_path = 'temp_image.jpg'
     file.save(image_path)
-    print(f"Image saved temporarily at: {image_path}")
+    logger.info(f"Image saved temporarily at: {image_path}")
 
     try:
         model = load_model_if_needed()
         prediction_result = predict_image(model, image_path)
-        print(f"Prediction result: {prediction_result}")
+        logger.info(f"Prediction result: {prediction_result}")
 
         if "error" in prediction_result:
             return jsonify(prediction_result), 400
 
         return jsonify(prediction_result), 200
     except Exception as e:
-        print(f"Error during prediction: {e}")
+        logger.error(f"Error during prediction: {e}")
         return jsonify({"error": "An error occurred while processing the image."}), 500
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
-            print("Temporary image file removed.")
+            logger.info("Temporary image file removed.")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
