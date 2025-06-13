@@ -24,43 +24,52 @@ logger.info(f"Starting Flask app on host 0.0.0.0 and port {port}")
 # Model initialization
 model = None
 model_lock = threading.Lock()
+model_load_error = None
 
 def load_model_in_background():
-    global model
+    global model, model_load_error
     with model_lock:
-        if model is None:
+        if model is None and model_load_error is None:
             model_path = 'autism_detection_model_(9.4).h5'
             abs_model_path = os.path.abspath(model_path)
             logger.info(f"Attempting to load model from: {abs_model_path}")
             if not os.path.exists(model_path):
                 logger.error(f"Model file not found at {abs_model_path}")
-                raise FileNotFoundError(f"Model file not found at {abs_model_path}")
+                model_load_error = f"Model file not found at {abs_model_path}"
+                return
             try:
-                # Validate HDF5 file and log file size
                 file_size = os.path.getsize(model_path)
                 logger.info(f"Model file size: {file_size} bytes")
+                if file_size < 1000:  # Arbitrary threshold for invalid HDF5
+                    logger.error(f"Model file too small ({file_size} bytes), likely corrupted")
+                    model_load_error = f"Model file too small ({file_size} bytes)"
+                    return
                 with h5py.File(model_path, 'r') as f:
                     logger.info(f"Validated HDF5 file at {abs_model_path}")
                 model = load_model(model_path)
                 logger.info("Model loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load model: {e}")
-                raise
+                model_load_error = f"Failed to load model: {str(e)}"
 
 # Start model loading in a separate thread
 threading.Thread(target=load_model_in_background, daemon=True).start()
 
 def load_model_if_needed():
     with model_lock:
+        if model is None and model_load_error:
+            raise RuntimeError(model_load_error)
         if model is None:
-            logger.info("Waiting for model to load...")
             load_model_in_background()
         return model
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "healthy"}), 200
+    with model_lock:
+        status = "healthy" if model is not None else "unhealthy - model not loaded"
+        error = None if model is not None else model_load_error
+    return jsonify({"status": status, "error": error}), 200 if model is not None else 503
 
 # Function to check if the image is blurry
 def is_image_blurry(image, threshold=100):
@@ -147,7 +156,6 @@ def predict():
                 logger.error(f"Error removing temporary file {image_path}: {e}")
 
 # No development server in production
-# Development server is for local testing only
 if __name__ == '__main__':
     logger.warning("Running in development mode. Use gunicorn for production.")
     port = int(os.getenv('PORT', 5000))
