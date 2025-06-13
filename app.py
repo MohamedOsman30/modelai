@@ -3,155 +3,56 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import Layer, InputLayer, Conv2D
-from tensorflow.keras.initializers import GlorotUniform, Zeros
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-import tensorflow as tf
 import os
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# ================== MODEL COMPATIBILITY FIXES ==================
-class FixedInputLayer(InputLayer):
-    @classmethod
-    def from_config(cls, config):
-        if 'batch_shape' in config:
-            config['batch_input_shape'] = config.pop('batch_shape')
-        return super().from_config(config)
+# Load the autism detection model
+model_path = 'autism_detection_model_(9.4).h5'
+model = load_model(model_path)
 
-# Custom dtype policy handler
-class DTypePolicyFix:
-    @classmethod
-    def from_config(cls, config):
-        # Handle both new and legacy formats
-        if isinstance(config, dict):
-            if 'class_name' in config and config['class_name'] == 'DTypePolicy':
-                return tf.keras.mixed_precision.Policy(config['config']['name'])
-            return tf.keras.mixed_precision.Policy(config['name'])
-        return tf.keras.mixed_precision.Policy(config)
-
-# Generic layer fixer
-class FixedLayer(Layer):
-    @classmethod
-    def from_config(cls, config):
-        # Fix dtype policy
-        if 'dtype' in config and isinstance(config['dtype'], dict):
-            config['dtype'] = DTypePolicyFix.from_config(config['dtype'])
-        return super().from_config(config)
-
-# Create fixed versions of all layer types
-def create_fixed_layer_class(base_class):
-    class FixedLayerClass(base_class, FixedLayer):
-        pass
-    FixedLayerClass.__name__ = f"Fixed{base_class.__name__}"
-    return FixedLayerClass
-
-# Layer types to fix
-layer_types = [Conv2D]  # Add other layer types if needed
-
-# Custom objects mapping
-CUSTOM_OBJECTS = {
-    'InputLayer': FixedInputLayer,
-    'DTypePolicy': DTypePolicyFix.from_config,
-    'GlorotUniform': GlorotUniform,
-    'Zeros': Zeros
-}
-
-# Register fixed layer classes
-for layer_type in layer_types:
-    fixed_class = create_fixed_layer_class(layer_type)
-    CUSTOM_OBJECTS[layer_type.__name__] = fixed_class
-
-# ================== MODEL PATHS AND LOADING ==================
-MODEL_DIR = "/app/models"
-MODEL_NAME = "autism_detection_model_(9.4).h5"
-model_path = os.path.join(MODEL_DIR, MODEL_NAME)
-
-# Debug: Log model path
-print(f"Model path: {os.path.abspath(model_path)}")
-
-try:
-    model = load_model(model_path, custom_objects=CUSTOM_OBJECTS)
-    print("Model loaded successfully!")
-except Exception as e:
-    import traceback
-    print(f"Detailed error: {traceback.format_exc()}")
-    raise RuntimeError(f"Failed to load model at {model_path}: {e}")
-
-# ================== YOLO INITIALIZATION ==================
-YOLO_DIR = "/app/yolo"
-weights_path = os.path.join(YOLO_DIR, "yolov3.weights")
-cfg_path = os.path.join(YOLO_DIR, "yolov3.cfg")
-names_path = os.path.join(YOLO_DIR, "coco.names")
-
-# Load YOLO model
-net = cv2.dnn.readNet(weights_path, cfg_path)
-
-# Load COCO class labels
-with open(names_path, "r") as f:
-    classes = [line.strip() for line in f]
-
-# Get output layer names
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
-
-# ================== HELPER FUNCTIONS ==================
+# Function to check if the image is blurry
 def is_image_blurry(image, threshold=100):
-    """Check if image is blurry using Laplacian variance."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    variance = cv2.Laplacian(gray, cv2.CV_64F).var()
-    return variance < threshold
+    variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return variance_of_laplacian < threshold
 
-def contains_human(image):
-    """Detect if image contains a human using YOLO."""
-    height, width, _ = image.shape
-    blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-    net.setInput(blob)
-    outputs = net.forward(output_layers)
-
-    for output in outputs:
-        for detection in output:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > 0.5 and class_id == 0:  # Class ID 0 is "person"
-                return True
-    return False
-
+# Preprocessing the image
 def preprocess_image(image_path, target_size=(299, 299)):
-    """Preprocess image for model prediction."""
+    # Load the original image using OpenCV
     original_image = cv2.imread(image_path)
     if original_image is None:
         return {"error": "Invalid image path or image could not be read."}
 
-    if not contains_human(original_image):
-        return {"error": "The picture is not suitable because it is not a human."}
+    # Optional: Check if the image is blurry (you can remove this if not needed)
+    if is_image_blurry(original_image):
+        return {"error": "The image is too blurry."}
 
+    # Load and preprocess the image for the model
     image = load_img(image_path, target_size=target_size)
     image = img_to_array(image)
     image = np.expand_dims(image, axis=0)
-    image = preprocess_input(image)
+    image = preprocess_input(image)  # Normalizing the input
     return {"image": image}
 
+# Prediction function
 def predict_image(model, image_path):
-    """Make prediction using the loaded model."""
     preprocess_result = preprocess_image(image_path)
     if "error" in preprocess_result:
-        return preprocess_result
+        return preprocess_result  # Return the error message
 
     image = preprocess_result["image"]
     prediction = model.predict(image)[0]
     predicted_class = np.argmax(prediction)
     class_labels = ['Autism', 'Normal']
-    return {"prediction": class_labels[predicted_class]}
+    predicted_label = class_labels[predicted_class]
 
-# ================== FLASK ROUTES ==================
-@app.route('/')
-def home():
-    return 'Autism Detection API is live.'
+    return {"prediction": predicted_label}
 
+# Predict Route
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
@@ -161,14 +62,13 @@ def predict():
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
 
-    # Save uploaded file temporarily
-    temp_dir = "/app/temp"
-    os.makedirs(temp_dir, exist_ok=True)
-    image_path = os.path.join(temp_dir, "temp_image.jpg")
+    # Save the uploaded file temporarily
+    image_path = 'temp_image.jpg'
     file.save(image_path)
     print(f"Image saved temporarily at: {image_path}")
 
     try:
+        # Make prediction
         prediction_result = predict_image(model, image_path)
         print(f"Prediction result: {prediction_result}")
 
@@ -180,9 +80,10 @@ def predict():
         print(f"Error during prediction: {e}")
         return jsonify({"error": "An error occurred while processing the image."}), 500
     finally:
+        # Remove the temporary file
         if os.path.exists(image_path):
             os.remove(image_path)
             print("Temporary image file removed.")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='127.0.0.1', port=5000)
