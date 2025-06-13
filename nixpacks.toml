@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg"]
+nixPkgs = ["python311", "ffmpeg", "libGL", "libjpeg", "zlib", "pkg-config", "cmake"]
 
 [phases.install]
 cmds = [
