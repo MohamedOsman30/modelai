@@ -86,4 +86,4 @@ def predict():
             print("Temporary image file removed.")
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000)
+    app.run(host='https://modelai.up.railway.app/', port=8080)
