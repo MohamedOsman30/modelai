@@ -8,6 +8,7 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 import os
 import logging
 import threading
+import h5py
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -35,6 +36,9 @@ def load_model_in_background():
                 logger.error(f"Model file not found at {abs_model_path}")
                 raise FileNotFoundError(f"Model file not found at {abs_model_path}")
             try:
+                # Validate HDF5 file
+                with h5py.File(model_path, 'r') as f:
+                    logger.info(f"Validated HDF5 file at {abs_model_path}")
                 model = load_model(model_path)
                 logger.info("Model loaded successfully")
             except Exception as e:
@@ -48,7 +52,7 @@ def load_model_if_needed():
     with model_lock:
         if model is None:
             logger.info("Waiting for model to load...")
-            load_model_in_background()  # Fallback if thread hasn't loaded yet
+            load_model_in_background()
         return model
 
 # Health check endpoint
@@ -69,18 +73,15 @@ def is_image_blurry(image, threshold=100):
 # Preprocessing the image
 def preprocess_image(image_path, target_size=(299, 299)):
     try:
-        # Load the original image using OpenCV
         original_image = cv2.imread(image_path)
         if original_image is None:
             logger.error(f"Failed to read image at {image_path}")
             return {"error": "Invalid image path or image could not be read."}
 
-        # Check if the image is blurry
         if is_image_blurry(original_image):
             logger.warning(f"Image at {image_path} is too blurry")
             return {"error": "The image is too blurry."}
 
-        # Load and preprocess the image for the model
         image = load_img(image_path, target_size=target_size)
         image = img_to_array(image)
         image = np.expand_dims(image, axis=0)
@@ -119,7 +120,6 @@ def predict():
         logger.warning("No selected file in request")
         return jsonify({"error": "No selected file"}), 400
 
-    # Save the uploaded file temporarily
     image_path = os.path.join(os.getcwd(), 'temp_image.jpg')
     try:
         file.save(image_path)
@@ -137,7 +137,6 @@ def predict():
         logger.error(f"Error during prediction: {e}")
         return jsonify({"error": f"An error occurred while processing the image: {str(e)}"}), 500
     finally:
-        # Remove the temporary file
         if os.path.exists(image_path):
             try:
                 os.remove(image_path)
@@ -145,7 +144,9 @@ def predict():
             except Exception as e:
                 logger.error(f"Error removing temporary file {image_path}: {e}")
 
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    logger.info(f"Running development server on host 0.0.0.0 and port {port}")
-    app.run(host='0.0.0.0', port=port)
+# Remove development server for production
+# if __name__ == '__main__': block is commented out to ensure gunicorn is used
+# if __name__ == '__main__':
+#     port = int(os.getenv('PORT', 5000))
+#     logger.info(f"Running development server on host 0.0.0.0 and port {port}")
+#     app.run(host='0.0.0.0', port=port)
