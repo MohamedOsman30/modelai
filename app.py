@@ -9,7 +9,9 @@ import os
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
-
+# Log startup details
+port = os.getenv('PORT', '5000')
+logger.info(f"Starting Flask app on host 0.0.0.0 and port {port}")
 # Lazy-load the model
 model = None
 
@@ -91,4 +93,5 @@ def predict():
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
+    logger.info(f"Running development server on host 0.0.0.0 and port {port}")
     app.run(host='0.0.0.0', port=port)
