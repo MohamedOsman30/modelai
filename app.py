@@ -13,7 +13,7 @@ import requests
 
 # --- Configuration ---
 MODEL_FILENAME = "autism_detection_model_(9.4).h5"
-DRIVE_DIRECT_DOWNLOAD = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download"
+DRIVE_DIRECT_DOWNLOAD = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download&authuser=0&confirm=t&uuid=2f2da46b-7f74-4274-a4cd-1832c2d4cdc5&at=AN8xHoqztFmgDsR8nJY7GIyBGoEe:1749874549886"
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
