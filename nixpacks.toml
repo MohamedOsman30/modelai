@@ -1,8 +1,24 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg", "libGL", "libjpeg", "zlib", "pkg-config", "cmake", "blas", "lapack"]
+nixPkgs = [
+  "python311", 
+  "ffmpeg", 
+  "libGL", 
+  "libjpeg", 
+  "zlib", 
+  "pkg-config", 
+  "cmake", 
+  "blas", 
+  "lapack", 
+  "opencv4", 
+  "glib", 
+  "gfortran", 
+  "libsm", 
+  "libxext", 
+  "libxrender"
+]
 
 [phases.build]
-cmds = []  # Prevent unwanted build commands like python app.py
+cmds = []
 
 [phases.install]
 cmds = [
