@@ -1,139 +1,120 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-import threading
-import logging
 import cv2
 import numpy as np
-import h5py
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+import os
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-# Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable CORS for all routes
 
-# Global variables
-model = None
-model_lock = threading.Lock()
-model_load_error = None
+# Load the autism detection model
+model_path = 'autism_detection_model_(9.4).h5'
+model = load_model(model_path)
 
-# Load model in background
-def load_model_background():
-    global model, model_load_error
-    with model_lock:
-        model_path = "autism_detection_model_(9.4).h5"
-        abs_path = os.path.abspath(model_path)
-        logger.info(f"Attempting to load model from: {abs_path}")
-        if not os.path.exists(model_path):
-            model_load_error = f"Model file not found at {abs_path}"
-            logger.error(model_load_error)
-            return
-        try:
-            file_size = os.path.getsize(model_path)
-            logger.info(f"Model file size: {file_size} bytes")
-            if file_size < 1000:
-                model_load_error = f"Model file too small ({file_size} bytes), likely corrupted"
-                logger.error(model_load_error)
-                return
-            with h5py.File(model_path, 'r'):
-                logger.info("Model file validated successfully.")
-            model = load_model(model_path)
-            logger.info("Model loaded successfully.")
-        except Exception as e:
-            model_load_error = f"Failed to load model: {str(e)}"
-            logger.error(model_load_error)
+# Load YOLO model using OpenCV
+net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
 
-# Start model loading in a background thread
-threading.Thread(target=load_model_background, daemon=True).start()
+# Load the class labels (80 object classes in the COCO dataset)
+with open("coco.names", "r") as f:
+    classes = [line.strip() for line in f.readlines()]
 
-# Helper: Load model if needed
-def get_model():
-    global model
-    with model_lock:
-        if model is not None:
-            return model
-        if model_load_error:
-            raise RuntimeError(model_load_error)
-        raise RuntimeError("Model is still loading.")
+# Get the output layer names
+layer_names = net.getLayerNames()
+output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-# Health route
-@app.route("/")
-@app.route("/health", methods=["GET"])
-def health():
-    with model_lock:
-        status = "ready" if model else "loading"
-        error = None if model else model_load_error
-    return jsonify({"status": status, "error": error}), 200 if model else 503
+# Function to check if the image is blurry
+def is_image_blurry(image, threshold=100):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return variance_of_laplacian < threshold
 
-# Check if image is blurry
-def is_blurry(image, threshold=100):
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        variance = cv2.Laplacian(gray, cv2.CV_64F).var()
-        return variance < threshold
-    except Exception as e:
-        logger.error(f"Error checking blur: {e}")
-        return True
+# Function to check if the image contains a human using YOLO
+def contains_human(image):
+    height, width, _ = image.shape
+    blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+    net.setInput(blob)
+    outputs = net.forward(output_layers)
 
-# Image preprocessing
+    human_detected = False
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            # Class ID 0 corresponds to person in COCO dataset
+            if confidence > 0.5 and class_id == 0:
+                human_detected = True
+                break
+    print(f"Human detected: {human_detected}")
+    return human_detected
+
+# Preprocessing the image
 def preprocess_image(image_path, target_size=(299, 299)):
-    try:
-        img = cv2.imread(image_path)
-        if img is None:
-            return {"error": "Invalid image path or unreadable image."}
-        if is_blurry(img):
-            return {"error": "Image is too blurry."}
+    # Load the original image using OpenCV
+    original_image = cv2.imread(image_path)
+    if original_image is None:
+        return {"error": "Invalid image path or image could not be read."}
 
-        image = load_img(image_path, target_size=target_size)
-        image = img_to_array(image)
-        image = np.expand_dims(image, axis=0)
-        image = preprocess_input(image)
-        return {"image": image}
-    except Exception as e:
-        return {"error": f"Preprocessing error: {str(e)}"}
+    
 
-# Predict route
-@app.route("/predict", methods=["POST"])
+    # Check if the image contains a human
+    if not contains_human(original_image):
+        return {"error": "The picture is not suitable because it is not a human."}
+
+    # Load and preprocess the image for the model
+    image = load_img(image_path, target_size=target_size)
+    image = img_to_array(image)
+    image = np.expand_dims(image, axis=0)
+    image = preprocess_input(image)  # Normalizing the input
+    return {"image": image}
+
+# Prediction function
+def predict_image(model, image_path):
+    preprocess_result = preprocess_image(image_path)
+    if "error" in preprocess_result:
+        return preprocess_result  # Return the error message
+
+    image = preprocess_result["image"]
+    prediction = model.predict(image)[0]
+    predicted_class = np.argmax(prediction)
+    class_labels = ['Autism', 'Normal']
+    predicted_label = class_labels[predicted_class]
+
+    return {"prediction": predicted_label}
+
+# Predict Route
+@app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
-        return jsonify({"error": "No file provided."}), 400
+        return jsonify({"error": "No file part"}), 400
 
     file = request.files['file']
     if file.filename == '':
-        return jsonify({"error": "Empty filename."}), 400
+        return jsonify({"error": "No selected file"}), 400
 
-    temp_path = os.path.join(os.getcwd(), "temp_image.jpg")
+    # Save the uploaded file temporarily
+    image_path = 'temp_image.jpg'
+    file.save(image_path)
+    print(f"Image saved temporarily at: {image_path}")
+
     try:
-        file.save(temp_path)
-        logger.info(f"Image saved to {temp_path}")
-        model_instance = get_model()
-        preprocess_result = preprocess_image(temp_path)
+        # Make prediction
+        prediction_result = predict_image(model, image_path)
+        print(f"Prediction result: {prediction_result}")
 
-        if "error" in preprocess_result:
-            return jsonify(preprocess_result), 400
+        if "error" in prediction_result:
+            return jsonify(prediction_result), 400  # Return the specific error message
 
-        image = preprocess_result["image"]
-        prediction = model_instance.predict(image)[0]
-        class_idx = np.argmax(prediction)
-        labels = ["Autism", "Normal"]
-        predicted_label = labels[class_idx]
-        return jsonify({"prediction": predicted_label}), 200
-
+        return jsonify(prediction_result), 200
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        return jsonify({"error": str(e)}), 500
-
+        print(f"Error during prediction: {e}")
+        return jsonify({"error": "An error occurred while processing the image."}), 500
     finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info("Temp file deleted.")
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file: {e}")
+        # Remove the temporary file
+        if os.path.exists(image_path):
+            os.remove(image_path)
+            print("Temporary image file removed.")
 
