@@ -3,179 +3,142 @@ from flask_cors import CORS
 import os
 import threading
 import logging
-import requests
-import h5py
-import numpy as np
 import cv2
+import numpy as np
+import h5py
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
-# === Logging Configuration ===
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("app")
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# === Flask App Initialization ===
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
-# === Global Variables ===
+# Global variables
 model = None
 model_lock = threading.Lock()
 model_load_error = None
-model_filename = 'autism_detection_model_(9.4).h5'
-drive_url = 'https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download'
 
-# === Model Download Function ===
-def download_model_from_drive(url, dest_path):
-    try:
-        logger.info("Downloading model from Google Drive...")
-        response = requests.get(url, stream=True)
-        if response.status_code == 200:
-            with open(dest_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            logger.info("Model downloaded successfully.")
-            return True
-        else:
-            logger.error(f"Failed to download model. Status code: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"Exception while downloading model: {e}")
-        return False
-
-# === Model Loader ===
-def load_model_in_background():
+# Load model in background
+def load_model_background():
     global model, model_load_error
     with model_lock:
-        if model is None and model_load_error is None:
-            model_path = os.path.abspath(model_filename)
-            logger.info(f"Attempting to load model from: {model_path}")
+        model_path = "autism_detection_model_(9.4).h5"
+        abs_path = os.path.abspath(model_path)
+        logger.info(f"Attempting to load model from: {abs_path}")
+        if not os.path.exists(model_path):
+            model_load_error = f"Model file not found at {abs_path}"
+            logger.error(model_load_error)
+            return
+        try:
+            file_size = os.path.getsize(model_path)
+            logger.info(f"Model file size: {file_size} bytes")
+            if file_size < 1000:
+                model_load_error = f"Model file too small ({file_size} bytes), likely corrupted"
+                logger.error(model_load_error)
+                return
+            with h5py.File(model_path, 'r'):
+                logger.info("Model file validated successfully.")
+            model = load_model(model_path)
+            logger.info("Model loaded successfully.")
+        except Exception as e:
+            model_load_error = f"Failed to load model: {str(e)}"
+            logger.error(model_load_error)
 
-            if not os.path.exists(model_filename) or os.path.getsize(model_filename) < 100000:
-                logger.warning("Model not found or too small. Attempting to download...")
-                if not download_model_from_drive(drive_url, model_filename):
-                    model_load_error = "Failed to download model from Google Drive."
-                    return
+# Start model loading in a background thread
+threading.Thread(target=load_model_background, daemon=True).start()
 
-            try:
-                file_size = os.path.getsize(model_filename)
-                logger.info(f"Model file size: {file_size} bytes")
-                if file_size < 100000:
-                    logger.error(f"Model file too small ({file_size} bytes), likely corrupted")
-                    model_load_error = f"Model file too small ({file_size} bytes)"
-                    return
-
-                with h5py.File(model_filename, 'r') as f:
-                    logger.info("HDF5 file validated")
-
-                model = load_model(model_filename)
-                logger.info("Model loaded successfully")
-
-            except Exception as e:
-                logger.error(f"Failed to load model: {e}")
-                model_load_error = f"Failed to load model: {str(e)}"
-
-# === Lazy Model Loader ===
-def load_model_if_needed():
+# Helper: Load model if needed
+def get_model():
+    global model
     with model_lock:
-        if model is None and model_load_error:
+        if model is not None:
+            return model
+        if model_load_error:
             raise RuntimeError(model_load_error)
-        if model is None:
-            load_model_in_background()
-        return model
+        raise RuntimeError("Model is still loading.")
 
-# === Image Blurriness Detection ===
-def is_image_blurry(image, threshold=100):
+# Health route
+@app.route("/")
+@app.route("/health", methods=["GET"])
+def health():
+    with model_lock:
+        status = "ready" if model else "loading"
+        error = None if model else model_load_error
+    return jsonify({"status": status, "error": error}), 200 if model else 503
+
+# Check if image is blurry
+def is_blurry(image, threshold=100):
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         variance = cv2.Laplacian(gray, cv2.CV_64F).var()
         return variance < threshold
     except Exception as e:
-        logger.error(f"Blurriness check failed: {e}")
+        logger.error(f"Error checking blur: {e}")
         return True
 
-# === Image Preprocessing ===
+# Image preprocessing
 def preprocess_image(image_path, target_size=(299, 299)):
     try:
-        original = cv2.imread(image_path)
-        if original is None:
-            logger.error(f"Could not read image at {image_path}")
-            return {"error": "Invalid image or unreadable file."}
-        if is_image_blurry(original):
-            logger.warning(f"Image too blurry: {image_path}")
-            return {"error": "The image is too blurry."}
+        img = cv2.imread(image_path)
+        if img is None:
+            return {"error": "Invalid image path or unreadable image."}
+        if is_blurry(img):
+            return {"error": "Image is too blurry."}
+
         image = load_img(image_path, target_size=target_size)
         image = img_to_array(image)
         image = np.expand_dims(image, axis=0)
         image = preprocess_input(image)
         return {"image": image}
     except Exception as e:
-        logger.error(f"Preprocessing failed: {e}")
-        return {"error": f"Error preprocessing image: {str(e)}"}
+        return {"error": f"Preprocessing error: {str(e)}"}
 
-# === Prediction Logic ===
-def predict_image(model, image_path):
-    result = preprocess_image(image_path)
-    if "error" in result:
-        return result
-    try:
-        image = result["image"]
-        prediction = model.predict(image)[0]
-        predicted_class = np.argmax(prediction)
-        class_labels = ['Autism', 'Normal']
-        return {"prediction": class_labels[predicted_class]}
-    except Exception as e:
-        logger.error(f"Prediction failed: {e}")
-        return {"error": f"Prediction failed: {str(e)}"}
-
-# === Routes ===
-
-@app.route('/health', methods=['GET'])
-def health():
-    with model_lock:
-        status = "healthy" if model is not None else "unhealthy - model not loaded"
-        error = None if model is not None else model_load_error
-    return jsonify({"status": status, "error": error}), 200 if model is not None else 503
-
-@app.route('/predict', methods=['POST'])
+# Predict route
+@app.route("/predict", methods=["POST"])
 def predict():
     if 'file' not in request.files:
-        logger.warning("No file part in request")
-        return jsonify({"error": "No file part"}), 400
+        return jsonify({"error": "No file provided."}), 400
+
     file = request.files['file']
     if file.filename == '':
-        logger.warning("No selected file")
-        return jsonify({"error": "No selected file"}), 400
+        return jsonify({"error": "Empty filename."}), 400
 
-    image_path = os.path.join(os.getcwd(), 'temp_image.jpg')
+    temp_path = os.path.join(os.getcwd(), "temp_image.jpg")
     try:
-        file.save(image_path)
-        logger.info(f"Image saved at: {image_path}")
+        file.save(temp_path)
+        logger.info(f"Image saved to {temp_path}")
+        model_instance = get_model()
+        preprocess_result = preprocess_image(temp_path)
 
-        model = load_model_if_needed()
-        result = predict_image(model, image_path)
-        logger.info(f"Prediction: {result}")
+        if "error" in preprocess_result:
+            return jsonify(preprocess_result), 400
 
-        if "error" in result:
-            return jsonify(result), 400
-        return jsonify(result), 200
+        image = preprocess_result["image"]
+        prediction = model_instance.predict(image)[0]
+        class_idx = np.argmax(prediction)
+        labels = ["Autism", "Normal"]
+        predicted_label = labels[class_idx]
+        return jsonify({"prediction": predicted_label}), 200
 
     except Exception as e:
         logger.error(f"Prediction error: {e}")
-        return jsonify({"error": f"Processing error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
     finally:
-        if os.path.exists(image_path):
+        if os.path.exists(temp_path):
             try:
-                os.remove(image_path)
-                logger.info("Temporary image removed")
+                os.remove(temp_path)
+                logger.info("Temp file deleted.")
             except Exception as e:
-                logger.error(f"Failed to delete temporary image: {e}")
+                logger.warning(f"Failed to delete temp file: {e}")
 
-# === Run App ===
-if __name__ == '__main__':
-    logger.warning("Running in development mode. Use Gunicorn in production.")
-    port = int(os.getenv('PORT', 5000))
-    logger.info(f"Server running on 0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port)
+# Run locally only (not used by Docker/Gunicorn)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    logger.info(f"Running on 0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port)
