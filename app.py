@@ -1,48 +1,68 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os
 import cv2
 import numpy as np
+import threading
+import logging
+import requests
+import h5py
+
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-import os
-import logging
-import threading
-import h5py
-import requests
 
-# --- Configuration ---
+# === Configuration ===
 MODEL_FILENAME = "autism_detection_model_(9.4).h5"
-DRIVE_DIRECT_DOWNLOAD = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download&authuser=0&confirm=t&uuid=2f2da46b-7f74-4274-a4cd-1832c2d4cdc5&at=AN8xHoqztFmgDsR8nJY7GIyBGoEe:1749874549886"
+YOLO_CFG = "yolov3.cfg"
+YOLO_WEIGHTS = "yolov3.weights"
+COCO_NAMES = "coco.names"
 
-# --- Logging ---
+MODEL_URL = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download&authuser=0&confirm=t&uuid=e543c47a-ecf4-4dc0-b728-ad887595bfe6&at=AN8xHorwP4Bq1QmL7PBu--JlDN0G:1749882792114"
+YOLO_CFG_URL = "https://drive.usercontent.google.com/download?id=1Kw5wpmAc-OlzIeD6StseoRwulEzYn7S6&export=download&authuser=0&confirm=t&uuid=d636bfc9-ab48-49b0-bf2e-a888c9dce94b&at=AN8xHoqEv5HxfF0-SX_fEQq-t-Dy:1749882860744"
+YOLO_WEIGHTS_URL = "https://drive.usercontent.google.com/download?id=1ze3bnBoeR0lXwzqVSqn4G9moPB4Xtdy5&export=download&authuser=0&confirm=t&uuid=cc3d9eb0-5a98-4afd-96c7-c80fc37d6550&at=AN8xHopkaJnQW6EgDml1cYrzy7-J:1749882902561"
+COCO_NAMES_URL = "https://drive.usercontent.google.com/download?id=1tXqtfva92vsKbBgbVV4GxKb9NUZ-JM4P&export=download&authuser=0&confirm=t&uuid=b8c6878f-298a-4947-afc2-026d06e69fbc&at=AN8xHooPiqFR7sbjVslN8NR96qC-:1749882928916"
+
+# === Logging ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Flask app ---
+# === Flask App ===
 app = Flask(__name__)
 CORS(app)
 
 model = None
+net = None
+output_layers = None
+classes = None
 model_lock = threading.Lock()
 model_load_error = None
 
-def download_model_from_drive():
-    logger.info("Attempting to download model from Google Drive...")
+# === File Download ===
+def download_file(url, filename):
+    logger.info(f"Downloading {filename}...")
     try:
-        response = requests.get(DRIVE_DIRECT_DOWNLOAD, stream=True, timeout=60)
+        response = requests.get(url, stream=True, timeout=60)
         if response.status_code == 200:
-            with open(MODEL_FILENAME, "wb") as f:
+            with open(filename, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            logger.info("Model downloaded successfully.")
-            return True
+            logger.info(f"{filename} downloaded.")
         else:
-            logger.error(f"Failed to download model. Status code: {response.status_code}")
-            return False
+            logger.error(f"Failed to download {filename}, status: {response.status_code}")
     except Exception as e:
-        logger.error(f"Exception during model download: {e}")
-        return False
+        logger.error(f"Exception downloading {filename}: {e}")
+
+def download_yolo_files():
+    if not os.path.exists(YOLO_CFG):
+        download_file(YOLO_CFG_URL, YOLO_CFG)
+    if not os.path.exists(YOLO_WEIGHTS):
+        download_file(YOLO_WEIGHTS_URL, YOLO_WEIGHTS)
+    if not os.path.exists(COCO_NAMES):
+        download_file(COCO_NAMES_URL, COCO_NAMES)
+
+def download_model():
+    download_file(MODEL_URL, MODEL_FILENAME)
 
 def is_valid_h5_file(filepath):
     try:
@@ -51,38 +71,38 @@ def is_valid_h5_file(filepath):
     except:
         return False
 
-def load_model_in_background():
-    global model, model_load_error
+def load_model_and_yolo():
+    global model, net, output_layers, classes, model_load_error
     with model_lock:
-        if model is not None or model_load_error:
+        if model is not None and net is not None:
             return
-        logger.info(f"Loading model from: {MODEL_FILENAME}")
-        if not os.path.exists(MODEL_FILENAME) or os.path.getsize(MODEL_FILENAME) < 1_000_000:
-            logger.warning("Model file missing or corrupted, attempting to download...")
-            if not download_model_from_drive():
-                model_load_error = "Model download failed"
-                return
-        if not is_valid_h5_file(MODEL_FILENAME):
-            model_load_error = "Downloaded file is not a valid HDF5 model."
-            return
+
+        # Download missing files
+        if not os.path.exists(MODEL_FILENAME) or not is_valid_h5_file(MODEL_FILENAME):
+            download_model()
+
+        download_yolo_files()
+
+        # Load Keras model
         try:
             model = load_model(MODEL_FILENAME)
-            logger.info("Model loaded successfully.")
+            logger.info("Autism model loaded.")
         except Exception as e:
-            logger.error(f"Model loading error: {e}")
-            model_load_error = str(e)
+            model_load_error = f"Model load failed: {e}"
+            return
 
-# Start loading model in background
-threading.Thread(target=load_model_in_background, daemon=True).start()
+        # Load YOLO
+        try:
+            net = cv2.dnn.readNet(YOLO_WEIGHTS, YOLO_CFG)
+            with open(COCO_NAMES, "r") as f:
+                classes = [line.strip() for line in f.readlines()]
+            layer_names = net.getLayerNames()
+            output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+            logger.info("YOLO model loaded.")
+        except Exception as e:
+            model_load_error = f"YOLO load failed: {e}"
 
-@app.route("/health", methods=["GET"])
-def health():
-    with model_lock:
-        return jsonify({
-            "status": "ready" if model else "not ready",
-            "error": model_load_error
-        }), 200 if model else 503
-
+# === Utility Functions ===
 def is_image_blurry(image, threshold=100):
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -91,19 +111,38 @@ def is_image_blurry(image, threshold=100):
         logger.error(f"Blurry check failed: {e}")
         return True
 
+def contains_human(image):
+    height, width, _ = image.shape
+    blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    outputs = net.forward(output_layers)
+
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.5 and classes[class_id] == "person":
+                return True
+    return False
+
 def preprocess_image(image_path):
-    original_image = cv2.imread(image_path)
-    if original_image is None:
+    image_cv = cv2.imread(image_path)
+    if image_cv is None:
         return {"error": "Invalid image"}
-    if is_image_blurry(original_image):
-        return {"error": "Image too blurry"}
+
+    
+
+    if not contains_human(image_cv):
+        return {"error": "Image does not contain a human"}
+
     image = load_img(image_path, target_size=(299, 299))
     image = img_to_array(image)
     image = np.expand_dims(image, axis=0)
     image = preprocess_input(image)
     return {"image": image}
 
-def predict_image(model, image_path):
+def predict_image(image_path):
     result = preprocess_image(image_path)
     if "error" in result:
         return result
@@ -114,18 +153,21 @@ def predict_image(model, image_path):
     except Exception as e:
         return {"error": f"Prediction failed: {str(e)}"}
 
+# === Routes ===
 @app.route("/predict", methods=["POST"])
 def predict():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
+
     file = request.files["file"]
     image_path = "temp.jpg"
     file.save(image_path)
+
     try:
-        load_model_in_background()
-        if not model:
-            raise RuntimeError("Model not ready")
-        result = predict_image(model, image_path)
+        load_model_and_yolo()
+        if model is None or net is None:
+            raise RuntimeError("Model or YOLO not loaded")
+        result = predict_image(image_path)
         return jsonify(result), 200 if "prediction" in result else 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -133,4 +175,11 @@ def predict():
         if os.path.exists(image_path):
             os.remove(image_path)
 
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "model_loaded": model is not None,
+        "yolo_loaded": net is not None,
+        "error": model_load_error
+    }), 200 if model and net else 503
 
