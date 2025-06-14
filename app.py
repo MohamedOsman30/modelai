@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify 
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import cv2
@@ -12,12 +12,13 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
-# === Configuration ===
+# === File Configuration ===
 MODEL_FILENAME = "autism_detection_model_(9.4).h5"
 YOLO_CFG = "yolov3.cfg"
 YOLO_WEIGHTS = "yolov3.weights"
 COCO_NAMES = "coco.names"
 
+# === Direct Download URLs (official YOLO sources) ===
 MODEL_URL = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download&authuser=0&confirm=t&uuid=e543c47a-ecf4-4dc0-b728-ad887595bfe6&at=AN8xHorwP4Bq1QmL7PBu--JlDN0G:1749882792114"
 YOLO_CFG_URL = "https://raw.githubusercontent.com/pjreddie/darknet/master/cfg/yolov3.cfg"
 YOLO_WEIGHTS_URL = "https://pjreddie.com/media/files/yolov3.weights"
@@ -27,7 +28,7 @@ COCO_NAMES_URL = "https://raw.githubusercontent.com/pjreddie/darknet/master/data
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === Flask App ===
+# === Flask App Setup ===
 app = Flask(__name__)
 CORS(app)
 
@@ -38,7 +39,11 @@ classes = None
 model_lock = threading.Lock()
 model_load_error = None
 
-# === File Download ===
+# === File Downloading ===
+def delete_file_if_exists(filename):
+    if os.path.exists(filename):
+        os.remove(filename)
+
 def download_file(url, filename):
     logger.info(f"Downloading {filename}...")
     try:
@@ -53,16 +58,18 @@ def download_file(url, filename):
     except Exception as e:
         logger.error(f"Exception downloading {filename}: {e}")
 
-def download_yolo_files():
-    if not os.path.exists(YOLO_CFG):
-        download_file(YOLO_CFG_URL, YOLO_CFG)
-    if not os.path.exists(YOLO_WEIGHTS):
-        download_file(YOLO_WEIGHTS_URL, YOLO_WEIGHTS)
-    if not os.path.exists(COCO_NAMES):
-        download_file(COCO_NAMES_URL, COCO_NAMES)
-
 def download_model():
+    delete_file_if_exists(MODEL_FILENAME)
     download_file(MODEL_URL, MODEL_FILENAME)
+
+def download_yolo_files():
+    delete_file_if_exists(YOLO_CFG)
+    delete_file_if_exists(YOLO_WEIGHTS)
+    delete_file_if_exists(COCO_NAMES)
+
+    download_file(YOLO_CFG_URL, YOLO_CFG)
+    download_file(YOLO_WEIGHTS_URL, YOLO_WEIGHTS)
+    download_file(COCO_NAMES_URL, COCO_NAMES)
 
 def is_valid_h5_file(filepath):
     try:
@@ -77,11 +84,14 @@ def load_model_and_yolo():
         if model is not None and net is not None:
             return
 
+        # Download model if needed
         if not os.path.exists(MODEL_FILENAME) or not is_valid_h5_file(MODEL_FILENAME):
             download_model()
 
+        # Download YOLO files
         download_yolo_files()
 
+        # Load Keras model
         try:
             model = load_model(MODEL_FILENAME)
             logger.info("Autism model loaded.")
@@ -90,6 +100,7 @@ def load_model_and_yolo():
             logger.error(model_load_error)
             return
 
+        # Load YOLO
         try:
             net = cv2.dnn.readNetFromDarknet(YOLO_CFG, YOLO_WEIGHTS)
             with open(COCO_NAMES, "r") as f:
@@ -101,7 +112,7 @@ def load_model_and_yolo():
             model_load_error = f"YOLO load failed: {e}"
             logger.error(model_load_error)
 
-# === Utility Functions ===
+# === Image Utilities ===
 def contains_human(image):
     height, width, _ = image.shape
     blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), swapRB=True, crop=False)
@@ -155,7 +166,7 @@ def predict():
     try:
         load_model_and_yolo()
         if model is None or net is None:
-            raise RuntimeError(model_load_error or "Model or YOLO not loaded")
+            raise RuntimeError("Model or YOLO not loaded")
         result = predict_image(image_path)
         return jsonify(result), 200 if "prediction" in result else 400
     except Exception as e:
@@ -172,6 +183,3 @@ def health():
         "error": model_load_error
     }), 200 if model and net else 503
 
-# === Run manually for local testing ===
-# if __name__ == "__main__":
-#     app.run(debug=True)
