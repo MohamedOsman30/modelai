@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify 
 from flask_cors import CORS
 import os
 import cv2
@@ -77,21 +77,19 @@ def load_model_and_yolo():
         if model is not None and net is not None:
             return
 
-        # Download missing files
         if not os.path.exists(MODEL_FILENAME) or not is_valid_h5_file(MODEL_FILENAME):
             download_model()
 
         download_yolo_files()
 
-        # Load Keras model
         try:
             model = load_model(MODEL_FILENAME)
             logger.info("Autism model loaded.")
         except Exception as e:
             model_load_error = f"Model load failed: {e}"
+            logger.error(model_load_error)
             return
 
-        # Load YOLO
         try:
             net = cv2.dnn.readNetFromDarknet(YOLO_CFG, YOLO_WEIGHTS)
             with open(COCO_NAMES, "r") as f:
@@ -101,6 +99,7 @@ def load_model_and_yolo():
             logger.info("YOLO model loaded.")
         except Exception as e:
             model_load_error = f"YOLO load failed: {e}"
+            logger.error(model_load_error)
 
 # === Utility Functions ===
 def contains_human(image):
@@ -156,7 +155,7 @@ def predict():
     try:
         load_model_and_yolo()
         if model is None or net is None:
-            raise RuntimeError("Model or YOLO not loaded")
+            raise RuntimeError(model_load_error or "Model or YOLO not loaded")
         result = predict_image(image_path)
         return jsonify(result), 200 if "prediction" in result else 400
     except Exception as e:
@@ -172,3 +171,7 @@ def health():
         "yolo_loaded": net is not None,
         "error": model_load_error
     }), 200 if model and net else 503
+
+# === Run manually for local testing ===
+# if __name__ == "__main__":
+#     app.run(debug=True)
