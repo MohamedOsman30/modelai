@@ -93,7 +93,7 @@ def load_model_and_yolo():
 
         # Load YOLO
         try:
-            net = cv2.dnn.readNet(YOLO_WEIGHTS, YOLO_CFG)
+            net = cv2.dnn.readNetFromDarknet(YOLO_CFG, YOLO_WEIGHTS)
             with open(COCO_NAMES, "r") as f:
                 classes = [line.strip() for line in f.readlines()]
             layer_names = net.getLayerNames()
