@@ -103,14 +103,6 @@ def load_model_and_yolo():
             model_load_error = f"YOLO load failed: {e}"
 
 # === Utility Functions ===
-def is_image_blurry(image, threshold=100):
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        return cv2.Laplacian(gray, cv2.CV_64F).var() < threshold
-    except Exception as e:
-        logger.error(f"Blurry check failed: {e}")
-        return True
-
 def contains_human(image):
     height, width, _ = image.shape
     blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), swapRB=True, crop=False)
@@ -130,8 +122,6 @@ def preprocess_image(image_path):
     image_cv = cv2.imread(image_path)
     if image_cv is None:
         return {"error": "Invalid image"}
-
-    
 
     if not contains_human(image_cv):
         return {"error": "Image does not contain a human"}
@@ -182,4 +172,3 @@ def health():
         "yolo_loaded": net is not None,
         "error": model_load_error
     }), 200 if model and net else 503
-
