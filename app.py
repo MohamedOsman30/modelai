@@ -137,8 +137,3 @@ def predict():
             except Exception as e:
                 logger.warning(f"Failed to delete temp file: {e}")
 
-# Run locally only (not used by Docker/Gunicorn)
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Running on 0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port)
