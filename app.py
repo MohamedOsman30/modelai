@@ -21,7 +21,7 @@ COCO_NAMES = "coco.names"
 MODEL_URL = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download&authuser=0&confirm=t&uuid=e543c47a-ecf4-4dc0-b728-ad887595bfe6&at=AN8xHorwP4Bq1QmL7PBu--JlDN0G:1749882792114"
 YOLO_CFG_URL = "https://raw.githubusercontent.com/pjreddie/darknet/master/cfg/yolov3.cfg"
 YOLO_WEIGHTS_URL = "https://pjreddie.com/media/files/yolov3.weights"
-COCO_NAMES_URL = "https://drive.usercontent.google.com/download?id=1tXqtfva92vsKbBgbVV4GxKb9NUZ-JM4P&export=download&authuser=0&confirm=t&uuid=b8c6878f-298a-4947-afc2-026d06e69fbc&at=AN8xHooPiqFR7sbjVslN8NR96qC-:1749882928916"
+COCO_NAMES_URL = "https://raw.githubusercontent.com/pjreddie/darknet/master/data/coco.names"
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
