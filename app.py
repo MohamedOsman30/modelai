@@ -1,139 +1,136 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-import threading
-import logging
 import cv2
 import numpy as np
-import h5py
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+import os
+import logging
+import threading
+import h5py
+import requests
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# --- Configuration ---
+MODEL_FILENAME = "autism_detection_model_(9.4).h5"
+DRIVE_DIRECT_DOWNLOAD = "https://drive.usercontent.google.com/download?id=1XRZQfgJuOCGvM3vU-1wVpKaf4aP2LxvF&export=download"
+
+# --- Logging ---
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
+# --- Flask app ---
 app = Flask(__name__)
 CORS(app)
 
-# Global variables
 model = None
 model_lock = threading.Lock()
 model_load_error = None
 
-# Load model in background
-def load_model_background():
+def download_model_from_drive():
+    logger.info("Attempting to download model from Google Drive...")
+    try:
+        response = requests.get(DRIVE_DIRECT_DOWNLOAD, stream=True, timeout=60)
+        if response.status_code == 200:
+            with open(MODEL_FILENAME, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logger.info("Model downloaded successfully.")
+            return True
+        else:
+            logger.error(f"Failed to download model. Status code: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Exception during model download: {e}")
+        return False
+
+def is_valid_h5_file(filepath):
+    try:
+        with h5py.File(filepath, 'r'):
+            return True
+    except:
+        return False
+
+def load_model_in_background():
     global model, model_load_error
     with model_lock:
-        model_path = "autism_detection_model_(9.4).h5"
-        abs_path = os.path.abspath(model_path)
-        logger.info(f"Attempting to load model from: {abs_path}")
-        if not os.path.exists(model_path):
-            model_load_error = f"Model file not found at {abs_path}"
-            logger.error(model_load_error)
+        if model is not None or model_load_error:
+            return
+        logger.info(f"Loading model from: {MODEL_FILENAME}")
+        if not os.path.exists(MODEL_FILENAME) or os.path.getsize(MODEL_FILENAME) < 1_000_000:
+            logger.warning("Model file missing or corrupted, attempting to download...")
+            if not download_model_from_drive():
+                model_load_error = "Model download failed"
+                return
+        if not is_valid_h5_file(MODEL_FILENAME):
+            model_load_error = "Downloaded file is not a valid HDF5 model."
             return
         try:
-            file_size = os.path.getsize(model_path)
-            logger.info(f"Model file size: {file_size} bytes")
-            if file_size < 1000:
-                model_load_error = f"Model file too small ({file_size} bytes), likely corrupted"
-                logger.error(model_load_error)
-                return
-            with h5py.File(model_path, 'r'):
-                logger.info("Model file validated successfully.")
-            model = load_model(model_path)
+            model = load_model(MODEL_FILENAME)
             logger.info("Model loaded successfully.")
         except Exception as e:
-            model_load_error = f"Failed to load model: {str(e)}"
-            logger.error(model_load_error)
+            logger.error(f"Model loading error: {e}")
+            model_load_error = str(e)
 
-# Start model loading in a background thread
-threading.Thread(target=load_model_background, daemon=True).start()
+# Start loading model in background
+threading.Thread(target=load_model_in_background, daemon=True).start()
 
-# Helper: Load model if needed
-def get_model():
-    global model
-    with model_lock:
-        if model is not None:
-            return model
-        if model_load_error:
-            raise RuntimeError(model_load_error)
-        raise RuntimeError("Model is still loading.")
-
-# Health route
-@app.route("/")
 @app.route("/health", methods=["GET"])
 def health():
     with model_lock:
-        status = "ready" if model else "loading"
-        error = None if model else model_load_error
-    return jsonify({"status": status, "error": error}), 200 if model else 503
+        return jsonify({
+            "status": "ready" if model else "not ready",
+            "error": model_load_error
+        }), 200 if model else 503
 
-# Check if image is blurry
-def is_blurry(image, threshold=100):
+def is_image_blurry(image, threshold=100):
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        variance = cv2.Laplacian(gray, cv2.CV_64F).var()
-        return variance < threshold
+        return cv2.Laplacian(gray, cv2.CV_64F).var() < threshold
     except Exception as e:
-        logger.error(f"Error checking blur: {e}")
+        logger.error(f"Blurry check failed: {e}")
         return True
 
-# Image preprocessing
-def preprocess_image(image_path, target_size=(299, 299)):
+def preprocess_image(image_path):
+    original_image = cv2.imread(image_path)
+    if original_image is None:
+        return {"error": "Invalid image"}
+    if is_image_blurry(original_image):
+        return {"error": "Image too blurry"}
+    image = load_img(image_path, target_size=(299, 299))
+    image = img_to_array(image)
+    image = np.expand_dims(image, axis=0)
+    image = preprocess_input(image)
+    return {"image": image}
+
+def predict_image(model, image_path):
+    result = preprocess_image(image_path)
+    if "error" in result:
+        return result
     try:
-        img = cv2.imread(image_path)
-        if img is None:
-            return {"error": "Invalid image path or unreadable image."}
-        if is_blurry(img):
-            return {"error": "Image is too blurry."}
-
-        image = load_img(image_path, target_size=target_size)
-        image = img_to_array(image)
-        image = np.expand_dims(image, axis=0)
-        image = preprocess_input(image)
-        return {"image": image}
+        preds = model.predict(result["image"])[0]
+        label = ["Autism", "Normal"][np.argmax(preds)]
+        return {"prediction": label}
     except Exception as e:
-        return {"error": f"Preprocessing error: {str(e)}"}
+        return {"error": f"Prediction failed: {str(e)}"}
 
-# Predict route
 @app.route("/predict", methods=["POST"])
 def predict():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided."}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "Empty filename."}), 400
-
-    temp_path = os.path.join(os.getcwd(), "temp_image.jpg")
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files["file"]
+    image_path = "temp.jpg"
+    file.save(image_path)
     try:
-        file.save(temp_path)
-        logger.info(f"Image saved to {temp_path}")
-        model_instance = get_model()
-        preprocess_result = preprocess_image(temp_path)
-
-        if "error" in preprocess_result:
-            return jsonify(preprocess_result), 400
-
-        image = preprocess_result["image"]
-        prediction = model_instance.predict(image)[0]
-        class_idx = np.argmax(prediction)
-        labels = ["Autism", "Normal"]
-        predicted_label = labels[class_idx]
-        return jsonify({"prediction": predicted_label}), 200
-
+        load_model_in_background()
+        if not model:
+            raise RuntimeError("Model not ready")
+        result = predict_image(model, image_path)
+        return jsonify(result), 200 if "prediction" in result else 400
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
         return jsonify({"error": str(e)}), 500
-
     finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info("Temp file deleted.")
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file: {e}")
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
 
