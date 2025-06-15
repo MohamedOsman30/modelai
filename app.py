@@ -95,8 +95,7 @@ def preprocess_image(image_path):
     original_image = cv2.imread(image_path)
     if original_image is None:
         return {"error": "Invalid image"}
-    if is_image_blurry(original_image):
-        return {"error": "Image too blurry"}
+    
     image = load_img(image_path, target_size=(299, 299))
     image = img_to_array(image)
     image = np.expand_dims(image, axis=0)
